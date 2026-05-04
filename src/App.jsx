@@ -13,10 +13,13 @@ export default function App() {
   const [aiInput, setAiInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [userId, setUserId] = useState(null);
+  const [statusMessage, setStatusMessage] = useState('解析中...'); // 新增狀態文字提示
 
   // 初始化匿名登入與資料監聽
   useEffect(() => {
+    console.log("嘗試匿名登入...");
     signInAnonymously(auth).then((userCredential) => {
+      console.log("登入成功，用戶 ID:", userCredential.user.uid);
       setUserId(userCredential.user.uid);
       const q = query(collection(db, `users/${userCredential.user.uid}/records`), orderBy("createdAt", "desc"));
       const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -24,19 +27,47 @@ export default function App() {
         setRecords(recordsData);
       });
       return () => unsubscribe();
-    }).catch(console.error);
+    }).catch((error) => {
+      console.error("登入失敗:", error);
+    });
   }, []);
+
+  // 帶有自動重試機制的 API 呼叫函式
+  const fetchWithRetry = async (prompt, maxRetries = 3) => {
+    let retries = 0;
+    while (retries < maxRetries) {
+      try {
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const result = await model.generateContent(prompt);
+        return result;
+      } catch (error) {
+        // 如果是 503 伺服器忙碌，則進行重試
+        if (error.message.includes('503') || error.message.includes('high demand')) {
+          retries++;
+          console.warn(`伺服器忙碌 (503)，第 ${retries} 次重新嘗試...`);
+          setStatusMessage(`伺服器塞車，自動重試中 (${retries}/${maxRetries})...`);
+          // 等待 2 秒後再試
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        } else {
+          // 其他嚴重錯誤直接拋出
+          throw error;
+        }
+      }
+    }
+    throw new Error("伺服器持續忙碌，已達到最大重試次數");
+  };
 
   // Gemini API 語意解析邏輯
   const handleAIParse = async () => {
     if (!aiInput.trim()) return;
     setLoading(true);
+    setStatusMessage('解析中...');
+    
     try {
-      // 已經將模型更新為 2.0 版本
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      console.log("1. 開始呼叫 Gemini AI...");
       const prompt = `
         請分析以下這句話，判斷是一筆財務收支紀錄。
-        請回傳純 JSON 格式，不要加任何其他文字或 Markdown 標記 (如 \`\`\`json)。
+        請回傳純 JSON 格式，不要加任何其他文字或 Markdown 標記。
         格式需求：
         {
           "type": "income" 或是 "expense",
@@ -47,25 +78,39 @@ export default function App() {
         分析句子：「${aiInput}」
       `;
 
-      const result = await model.generateContent(prompt);
-      const responseText = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+      // 使用我們寫好的重試函式
+      const result = await fetchWithRetry(prompt);
+      console.log("2. AI 原始回傳內容:", result.response.text());
+      
+      const responseText = result.response.text().replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
       const parsedData = JSON.parse(responseText);
+      console.log("3. JSON 解析成功:", parsedData);
 
+      console.log("4. 準備將資料寫入 Firebase...");
       await addDoc(collection(db, `users/${userId}/records`), {
         ...parsedData,
         createdAt: new Date().toISOString()
       });
+      
+      console.log("5. 寫入雲端成功！");
       setAiInput('');
     } catch (error) {
-      console.error("AI 解析失敗", error);
-      alert("解析失敗，請確認輸入格式或稍微換個說法。");
+      console.error("處理過程中發生錯誤:", error);
+      alert(`發生錯誤：${error.message}\n請稍後再試或檢查網路連線。`);
+    } finally {
+      setLoading(false);
+      setStatusMessage('解析中...'); // 重置狀態
     }
-    setLoading(false);
   };
 
   const handleDelete = async (id) => {
     if(window.confirm('確定要刪除這筆資料嗎？')){
-      await deleteDoc(doc(db, `users/${userId}/records`, id));
+      try {
+        await deleteDoc(doc(db, `users/${userId}/records`, id));
+        console.log("刪除成功");
+      } catch (error) {
+        console.error("刪除失敗:", error);
+      }
     }
   };
 
@@ -106,7 +151,7 @@ export default function App() {
             disabled={loading}
             className="w-full md:w-auto px-6 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-2 hover:bg-blue-700 disabled:opacity-50"
           >
-            {loading ? '解析中...' : <><Send size={18} /> 智慧輸入</>}
+            {loading ? statusMessage : <><Send size={18} /> 智慧輸入</>}
           </button>
         </div>
       </Card>
