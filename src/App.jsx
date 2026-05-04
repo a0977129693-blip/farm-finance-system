@@ -32,7 +32,8 @@ export default function App() {
     if (!aiInput.trim()) return;
     setLoading(true);
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+      // 這裡更新為最新的 gemini-1.5-flash 模型，解決 404 找不到舊模型的問題
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const prompt = `
         請分析以下這句話，判斷是一筆財務收支紀錄。
         請回傳純 JSON 格式，不要加任何其他文字或 Markdown 標記 (如 \`\`\`json)。
