@@ -33,7 +33,7 @@ export default function App() {
     setLoading(true);
     try {
       // 已經將模型更新為 2.0 版本
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
       const prompt = `
         請分析以下這句話，判斷是一筆財務收支紀錄。
         請回傳純 JSON 格式，不要加任何其他文字或 Markdown 標記 (如 \`\`\`json)。
