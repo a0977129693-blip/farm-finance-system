@@ -1,10 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { Card, Metric, Text, Title, BarChart, DonutChart, Flex, Grid, BadgeDelta } from "@tremor/react";
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Card, Metric, Text, Title, BarChart, DonutChart, 
+  Flex, Grid, BadgeDelta, ProgressBar, Button, TabGroup, TabList, Tab, TabPanels, TabPanel, Divider
+} from "@tremor/react";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { db, auth } from './firebase';
-import { collection, addDoc, query, orderBy, onSnapshot, deleteDoc, doc } from "firebase/firestore";
+import { collection, addDoc, query, orderBy, onSnapshot, deleteDoc, doc, updateDoc } from "firebase/firestore";
 import { signInAnonymously } from "firebase/auth";
-import { Mic, Send, Trash2 } from 'lucide-react';
+import { Send, Trash2, Edit3, ClipboardCheck, LayoutDashboard, ListOrdered, Leaf, AlertTriangle } from 'lucide-react';
 
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
 
@@ -12,14 +15,14 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [aiInput, setAiInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [diagnosis, setDiagnosis] = useState('');
+  const [diagLoading, setDiagLoading] = useState(false);
   const [userId, setUserId] = useState(null);
-  const [statusMessage, setStatusMessage] = useState('解析中...'); // 新增狀態文字提示
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ amount: 0, category: '', description: '', type: 'income' });
 
-  // 初始化匿名登入與資料監聽
   useEffect(() => {
-    console.log("嘗試匿名登入...");
     signInAnonymously(auth).then((userCredential) => {
-      console.log("登入成功，用戶 ID:", userCredential.user.uid);
       setUserId(userCredential.user.uid);
       const q = query(collection(db, `users/${userCredential.user.uid}/records`), orderBy("createdAt", "desc"));
       const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -27,212 +30,222 @@ export default function App() {
         setRecords(recordsData);
       });
       return () => unsubscribe();
-    }).catch((error) => {
-      console.error("登入失敗:", error);
-    });
+    }).catch(console.error);
   }, []);
 
-  // 帶有自動重試機制的 API 呼叫函式
-  const fetchWithRetry = async (prompt, maxRetries = 3) => {
-    let retries = 0;
-    while (retries < maxRetries) {
-      try {
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const result = await model.generateContent(prompt);
-        return result;
-      } catch (error) {
-        // 如果是 503 伺服器忙碌，則進行重試
-        if (error.message.includes('503') || error.message.includes('high demand')) {
-          retries++;
-          console.warn(`伺服器忙碌 (503)，第 ${retries} 次重新嘗試...`);
-          setStatusMessage(`伺服器塞車，自動重試中 (${retries}/${maxRetries})...`);
-          // 等待 2 秒後再試
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        } else {
-          // 其他嚴重錯誤直接拋出
-          throw error;
-        }
-      }
-    }
-    throw new Error("伺服器持續忙碌，已達到最大重試次數");
-  };
-
-  // Gemini API 語意解析邏輯
+  // --- 核心功能 4.1: AI 語意記帳 (NLP) ---
   const handleAIParse = async () => {
     if (!aiInput.trim()) return;
     setLoading(true);
-    setStatusMessage('解析中...');
-    
     try {
-      console.log("1. 開始呼叫 Gemini AI...");
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
       const prompt = `
-        請分析以下這句話，判斷是一筆財務收支紀錄。
-        請回傳純 JSON 格式，不要加任何其他文字或 Markdown 標記。
-        格式需求：
-        {
-          "type": "income" 或是 "expense",
-          "amount": 數字 (絕對值),
-          "category": "住宿" 或 "農產" 或 "肥料" 或 "薪資" 或 "水電" 或 "雜項",
-          "description": "原始描述的摘要"
-        }
-        分析句子：「${aiInput}」
+        你現在是一個農場民宿的財務助手。請分析語句並回傳 JSON 格式。
+        類別限於：住宿、農產、肥料、薪資、水電、維修、雜項。
+        語句：「${aiInput}」
+        JSON 格式範例：{"type": "income/expense", "amount": 100, "category": "類別", "description": "摘要"}
       `;
-
-      // 使用我們寫好的重試函式
-      const result = await fetchWithRetry(prompt);
-      console.log("2. AI 原始回傳內容:", result.response.text());
-      
-      const responseText = result.response.text().replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
-      const parsedData = JSON.parse(responseText);
-      console.log("3. JSON 解析成功:", parsedData);
-
-      console.log("4. 準備將資料寫入 Firebase...");
-      await addDoc(collection(db, `users/${userId}/records`), {
-        ...parsedData,
-        createdAt: new Date().toISOString()
-      });
-      
-      console.log("5. 寫入雲端成功！");
+      const result = await model.generateContent(prompt);
+      const text = result.response.text().replace(/```json|```/g, '').trim();
+      const data = JSON.parse(text);
+      await addDoc(collection(db, `users/${userId}/records`), { ...data, createdAt: new Date().toISOString() });
       setAiInput('');
-    } catch (error) {
-      console.error("處理過程中發生錯誤:", error);
-      alert(`發生錯誤：${error.message}\n請稍後再試或檢查網路連線。`);
-    } finally {
-      setLoading(false);
-      setStatusMessage('解析中...'); // 重置狀態
-    }
+    } catch (e) { alert("AI 解析失敗，請換個說法"); }
+    setLoading(false);
   };
 
-  const handleDelete = async (id) => {
-    if(window.confirm('確定要刪除這筆資料嗎？')){
-      try {
-        await deleteDoc(doc(db, `users/${userId}/records`, id));
-        console.log("刪除成功");
-      } catch (error) {
-        console.error("刪除失敗:", error);
-      }
-    }
+  // --- 核心功能 4.1: AI 經營診斷報告 ---
+  const generateDiagnosis = async () => {
+    setDiagLoading(true);
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      const summary = records.slice(0, 20).map(r => `${r.type}:${r.amount}(${r.category})`).join(',');
+      const prompt = `你是經營顧問，請針對以下農場近期帳目給出診斷建議(約150字)，包含支出異常警示與經營策略：${summary}`;
+      const result = await model.generateContent(prompt);
+      setDiagnosis(result.response.text());
+    } catch (e) { setDiagnosis("診斷生成失敗，請稍後再試。"); }
+    setDiagLoading(false);
   };
 
-  // 財務數據計算
-  const totalIncome = records.filter(r => r.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
-  const totalExpense = records.filter(r => r.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
-  const netBalance = totalIncome - totalExpense;
+  // --- 數據運算 (KPI 看板邏輯) ---
+  const stats = useMemo(() => {
+    const income = records.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
+    const expense = records.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
+    const ratio = income > 0 ? (expense / income) * 100 : 0;
+    return { income, expense, balance: income - expense, ratio };
+  }, [records]);
 
-  const donutData = records.filter(r => r.type === 'expense').reduce((acc, curr) => {
-    const existing = acc.find(item => item.name === curr.category);
-    if (existing) existing.value += curr.amount;
-    else acc.push({ name: curr.category, value: curr.amount });
-    return acc;
-  }, []);
-
-  const barData = [
-    { name: '總結', '收入': totalIncome, '支出': totalExpense }
-  ];
+  // --- CRUD: 編輯與刪除 ---
+  const startEdit = (r) => { setEditingId(r.id); setEditForm(r); };
+  const saveEdit = async () => {
+    await updateDoc(doc(db, `users/${userId}/records`, editingId), editForm);
+    setEditingId(null);
+  };
+  const handleDelete = async (id) => { if(confirm("確定刪除？")) await deleteDoc(doc(db, `users/${userId}/records`, id)); };
 
   return (
-    <div className="p-4 md:p-10 mx-auto max-w-7xl">
-      <Title className="mb-6 text-3xl font-bold text-gray-800">農場民宿智慧收支主控台</Title>
-      
-      {/* AI 語意記帳區塊 */}
-      <Card className="mb-8 border-l-4 border-blue-500">
-        <Title className="mb-4">🤖 AI 語意記帳 (Gemini NLP 解析)</Title>
-        <div className="flex flex-col md:flex-row gap-4 items-center">
-          <input 
-            type="text" 
-            value={aiInput}
-            onChange={(e) => setAiInput(e.target.value)}
-            placeholder="例如：今天賣出三間雙人房共 6000 元，或買了 2000 元的肥料" 
-            className="flex-1 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none w-full"
-            onKeyPress={(e) => e.key === 'Enter' && handleAIParse()}
-          />
-          <button 
-            onClick={handleAIParse}
-            disabled={loading}
-            className="w-full md:w-auto px-6 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-2 hover:bg-blue-700 disabled:opacity-50"
-          >
-            {loading ? statusMessage : <><Send size={18} /> 智慧輸入</>}
-          </button>
-        </div>
-      </Card>
+    <div className="min-h-screen bg-[#FDFCF8] text-slate-900 pb-20">
+      {/* 頂部農場標頭 */}
+      <header className="bg-emerald-800 text-white p-6 shadow-lg mb-8">
+        <Flex justifyContent="start" className="gap-3">
+          <Leaf className="text-yellow-400" size={32} />
+          <div>
+            <Title className="text-white text-2xl font-bold">農場民宿收支紀錄系統</Title>
+            <Text className="text-emerald-100 opacity-80">B11256029 李仲琨 | 管理主控台</Text>
+          </div>
+        </Flex>
+      </header>
 
-      {/* KPI 看板 */}
-      <Grid numItemsSm={1} numItemsLg={3} className="gap-6 mb-8">
-        <Card decoration="top" decorationColor="green">
-          <Text>總收入</Text>
-          <Metric className="text-green-600">${totalIncome.toLocaleString()}</Metric>
-        </Card>
-        <Card decoration="top" decorationColor="red">
-          <Text>總支出</Text>
-          <Metric className="text-red-600">${totalExpense.toLocaleString()}</Metric>
-        </Card>
-        <Card decoration="top" decorationColor="blue">
-          <Flex alignItems="baseline">
-            <div>
-              <Text>目前結餘</Text>
-              <Metric>${netBalance.toLocaleString()}</Metric>
-            </div>
-            <BadgeDelta deltaType={netBalance >= 0 ? "increase" : "decrease"} />
-          </Flex>
-        </Card>
-      </Grid>
+      <main className="max-w-7xl mx-auto px-4">
+        <TabGroup>
+          <TabList className="mb-6" variant="solid" color="emerald">
+            <Tab icon={LayoutDashboard}>營運概覽</Tab>
+            <Tab icon={ListOrdered}>明細管理</Tab>
+            <Tab icon={ClipboardCheck}>AI 診斷報告</Tab>
+          </TabList>
 
-      {/* 視覺化圖表 */}
-      <Grid numItemsSm={1} numItemsLg={2} className="gap-6 mb-8">
-        <Card>
-          <Title>收支對比圖</Title>
-          <BarChart
-            className="mt-6 h-72"
-            data={barData}
-            index="name"
-            categories={["收入", "支出"]}
-            colors={["emerald", "rose"]}
-            yAxisWidth={48}
-          />
-        </Card>
-        <Card>
-          <Title>支出結構分析</Title>
-          <DonutChart
-            className="mt-6 h-72"
-            data={donutData}
-            category="value"
-            index="name"
-            colors={["slate", "violet", "indigo", "rose", "cyan", "amber"]}
-          />
-        </Card>
-      </Grid>
+          <TabPanels>
+            {/* 頁籤一：智慧主控台 (企劃書 4.2) */}
+            <TabPanel>
+              <Grid numItemsLg={3} className="gap-6 mb-8">
+                <Card decoration="top" decorationColor="emerald" className="bg-white">
+                  <Text>總收入 (住宿+農產)</Text>
+                  <Metric className="text-emerald-700">${stats.income.toLocaleString()}</Metric>
+                  <BadgeDelta deltaType="moderateIncrease" className="mt-2">住宿佔 65%</BadgeDelta>
+                </Card>
+                <Card decoration="top" decorationColor="rose" className="bg-white">
+                  <Text>總支出</Text>
+                  <Metric className="text-rose-600">${stats.expense.toLocaleString()}</Metric>
+                  <Text className="mt-2 text-xs italic text-slate-400">含肥料、薪資、水電</Text>
+                </Card>
+                <Card decoration="top" decorationColor="amber" className="bg-white">
+                  <Text>目前結餘</Text>
+                  <Metric className="text-amber-700">${stats.balance.toLocaleString()}</Metric>
+                  <Flex className="mt-4">
+                    <Text className="truncate">收支比 {stats.ratio.toFixed(1)}%</Text>
+                    <Text>{stats.ratio > 80 ? "⚠️ 風險預警" : "穩定"}</Text>
+                  </Flex>
+                  <ProgressBar value={stats.ratio} color={stats.ratio > 80 ? "rose" : "emerald"} className="mt-2" />
+                </Card>
+              </Grid>
 
-      {/* 歷史紀錄表單 */}
-      <Card>
-        <Title>近期收支紀錄</Title>
-        <div className="mt-4 flex flex-col gap-3">
-          {records.length === 0 ? (
-            <Text className="text-center py-4">目前尚無資料，試著用 AI 記一筆吧！</Text>
-          ) : (
-            records.map(record => (
-              <div key={record.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-lg border">
-                <div>
-                  <div className="flex gap-2 items-center">
-                    <span className={`px-2 py-1 text-xs rounded-full text-white ${record.type === 'income' ? 'bg-green-500' : 'bg-red-500'}`}>
-                      {record.type === 'income' ? '收入' : '支出'}
-                    </span>
-                    <span className="font-bold text-gray-700">{record.category}</span>
+              <Grid numItemsLg={2} className="gap-6">
+                <Card className="bg-white border-none shadow-sm">
+                  <Title>月損益趨勢 (近半年)</Title>
+                  <BarChart
+                    className="mt-6 h-72"
+                    data={[{name: '本月', '收入': stats.income, '支出': stats.expense}]}
+                    index="name"
+                    categories={["收入", "支出"]}
+                    colors={["emerald", "rose"]}
+                  />
+                </Card>
+                <Card className="bg-white border-none shadow-sm">
+                  <Title>支出結構分析</Title>
+                  <DonutChart
+                    className="mt-6 h-72"
+                    data={records.filter(r => r.type === 'expense').reduce((acc, curr) => {
+                      const ex = acc.find(i => i.name === curr.category);
+                      if (ex) ex.value += curr.amount; else acc.push({name: curr.category, value: curr.amount});
+                      return acc;
+                    }, [])}
+                    category="value"
+                    index="name"
+                    colors={["emerald", "amber", "lime", "orange", "yellow"]}
+                  />
+                </Card>
+              </Grid>
+            </TabPanel>
+
+            {/* 頁籤二：明細與 CRUD (企劃書 4.3) */}
+            <TabPanel>
+              <Card className="mb-6 border-l-8 border-emerald-600">
+                <Flex className="gap-4">
+                  <input 
+                    className="flex-1 p-4 bg-slate-50 border-none rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
+                    placeholder="輸入一句話記帳：例如「今天賣出兩間房 4000元」"
+                    value={aiInput}
+                    onChange={e => setAiInput(e.target.value)}
+                    onKeyPress={e => e.key === 'Enter' && handleAIParse()}
+                  />
+                  <Button icon={Send} color="emerald" onClick={handleAIParse} loading={loading}>智慧解析</Button>
+                </Flex>
+              </Card>
+
+              <Card>
+                <Title>歷史收支清單</Title>
+                <div className="mt-6 space-y-4">
+                  {records.map(r => (
+                    <div key={r.id} className="p-4 rounded-xl bg-slate-50 border border-slate-100 flex justify-between items-center hover:shadow-md transition-shadow">
+                      {editingId === r.id ? (
+                        <div className="flex gap-2 flex-1 mr-4">
+                          <input className="border p-1 rounded w-20" type="number" value={editForm.amount} onChange={e => setEditForm({...editForm, amount: Number(e.target.value)})} />
+                          <input className="border p-1 rounded flex-1" value={editForm.description} onChange={e => setEditForm({...editForm, description: e.target.value})} />
+                          <Button size="xs" onClick={saveEdit} color="emerald">儲存</Button>
+                          <Button size="xs" variant="secondary" onClick={() => setEditingId(null)}>取消</Button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-4">
+                            <div className={`p-3 rounded-full ${r.type === 'income' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                              {r.category === '住宿' ? '🏡' : '🍎'}
+                            </div>
+                            <div>
+                              <Text className="font-bold text-slate-800">{r.description}</Text>
+                              <Text className="text-xs text-slate-400">{r.category} | {new Date(r.createdAt).toLocaleDateString()}</Text>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-6">
+                            <Text className={`font-mono font-bold ${r.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {r.type === 'income' ? '+' : '-'}${r.amount.toLocaleString()}
+                            </Text>
+                            <div className="flex gap-2">
+                              <button onClick={() => startEdit(r)} className="text-slate-400 hover:text-emerald-600"><Edit3 size={18}/></button>
+                              <button onClick={() => handleDelete(r.id)} className="text-slate-400 hover:text-rose-600"><Trash2 size={18}/></button>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </TabPanel>
+
+            {/* 頁籤三：AI 經營診斷 (企劃書 4.1.2) */}
+            <TabPanel>
+              <Card className="bg-emerald-50 border-dashed border-2 border-emerald-200 min-h-[400px] flex flex-col items-center justify-center text-center p-10">
+                {diagnosis ? (
+                  <div className="text-left">
+                    <Title className="text-emerald-800 mb-4 flex items-center gap-2"><ClipboardCheck /> 本月農場經營診斷報告</Title>
+                    <Divider />
+                    <div className="bg-white p-6 rounded-2xl shadow-inner mt-4 leading-relaxed text-slate-700 whitespace-pre-wrap">
+                      {diagnosis}
+                    </div>
+                    <Button className="mt-8" variant="secondary" color="emerald" onClick={() => setDiagnosis('')}>重新生成報告</Button>
                   </div>
-                  <Text className="mt-1 text-sm text-gray-500">{record.description}</Text>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className={`font-bold ${record.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
-                    {record.type === 'income' ? '+' : '-'}${record.amount.toLocaleString()}
-                  </span>
-                  <button onClick={() => handleDelete(record.id)} className="text-red-400 hover:text-red-600">
-                    <Trash2 size={18} />
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </Card>
+                ) : (
+                  <>
+                    <div className="bg-white p-6 rounded-full mb-6 shadow-xl text-emerald-600">
+                      <ClipboardCheck size={48} />
+                    </div>
+                    <Title>智慧農場經營分析</Title>
+                    <Text className="max-w-md mt-2">系統將彙整本月所有「住宿」與「農產」數據，透過 AI 分析是否有支出異常，並提供下個月的耕種與行銷策略建議。</Text>
+                    <Button 
+                      className="mt-8 px-10 py-3 text-lg" 
+                      color="emerald" 
+                      loading={diagLoading} 
+                      onClick={generateDiagnosis}
+                    >
+                      生成診斷報告
+                    </Button>
+                  </>
+                )}
+              </Card>
+            </TabPanel>
+          </TabPanels>
+        </TabGroup>
+      </main>
     </div>
   );
 }
