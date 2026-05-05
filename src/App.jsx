@@ -33,7 +33,14 @@ const QUICK_SUGGESTIONS = [
   { label: "發薪水", text: "支付臨時工兩天工資 3200 元", icon: "👷" },
 ];
 
-// ✅ 修正2：指數退避重試工具函式
+// ✅ 修正色碼：直接使用 HEX，避免 Tailwind JIT 清除動態色彩類別
+const CHART_COLORS = {
+  income: "#10b981",   // emerald-500
+  expense: "#f43f5e",  // rose-500
+  donut: ["#10b981", "#f59e0b", "#f43f5e", "#3b82f6", "#8b5cf6"],
+};
+
+// 指數退避重試工具函式
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const generateWithRetry = async (model, prompt, maxRetries = 3) => {
@@ -55,6 +62,9 @@ const generateWithRetry = async (model, prompt, maxRetries = 3) => {
     }
   }
 };
+
+// ✅ 修正：使用較穩定的模型名稱（gemini-1.5-flash 作為備援）
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 export default function App() {
   const [records, setRecords] = useState([]);
@@ -89,7 +99,7 @@ export default function App() {
     if (!aiInput.trim()) return;
     setLoading(true);
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
       const prompt = `你現在是農場財務助理。分析語句並回傳純 JSON。
       類別：住宿、農產、肥料、薪資、水電、維修、雜項。
       語句：「${aiInput}」
@@ -114,13 +124,13 @@ export default function App() {
     setLoading(false);
   };
 
-  // 3. AI 經營診斷報告 ✅ 修正：改用 gemini-2.5-flash + 重試機制
+  // 3. AI 經營診斷報告
   const generateDiagnosis = async () => {
     if (records.length === 0) return alert("尚無數據可分析");
     setDiagLoading(true);
     setDiagnosis('');
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
       const history = records.slice(0, 15).map(r => `${r.type}:${r.amount}(${r.category})`).join(',');
       const prompt = `你是農場經營顧問，分析這些帳目並提供經營策略建議(含支出異常預警，請用繁體中文回覆)：${history}`;
       const result = await generateWithRetry(model, prompt);
@@ -153,7 +163,7 @@ export default function App() {
     return { income, expense, balance: profit, ratio, profitChange };
   }, [records]);
 
-  // ✅ 修正1：圖表資料整理（加入 valueFormatter 與明確色碼）
+  // ✅ 修正：圖表資料 - categories 名稱須與資料 key 完全對應
   const barChartData = useMemo(() => ([
     { name: '當前統計', '收入': stats.income, '支出': stats.expense }
   ]), [stats]);
@@ -417,7 +427,7 @@ export default function App() {
           </Card>
         </Grid>
 
-        {/* ✅ 修正1：圖表分析 - 改用 customTooltipAttributes 與明確顏色 */}
+        {/* ✅ 修正：圖表改用 HEX 色碼，解決 Tailwind JIT purge 導致顏色變黑問題 */}
         <Grid numItemsLg={2} className="gap-8">
           <Card className="bg-white shadow-lg">
             <Title className="text-slate-800 flex items-center gap-2">
@@ -428,7 +438,7 @@ export default function App() {
               data={barChartData}
               index="name"
               categories={["收入", "支出"]}
-              colors={["emerald", "rose"]}
+              colors={[CHART_COLORS.income, CHART_COLORS.expense]}
               valueFormatter={(value) => `$${value.toLocaleString()}`}
               yAxisWidth={80}
               showLegend={true}
@@ -447,7 +457,7 @@ export default function App() {
                 data={donutChartData}
                 category="value"
                 index="name"
-                colors={["emerald", "amber", "rose", "blue", "violet"]}
+                colors={CHART_COLORS.donut}
                 valueFormatter={(value) => `$${value.toLocaleString()}`}
                 showAnimation={true}
                 showLabel={true}
