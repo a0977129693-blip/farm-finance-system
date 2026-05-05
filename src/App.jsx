@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Card, Metric, Text, Title, BarChart, DonutChart, 
-  Flex, Grid, BadgeDelta, ProgressBar, Button, Divider 
+  Card, Metric, Text, Title,
+  Flex, Grid, BadgeDelta, ProgressBar
 } from "@tremor/react";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  PieChart, Pie, Cell
+} from "recharts";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { db, auth } from './firebase';
 import { 
@@ -33,13 +37,11 @@ const QUICK_SUGGESTIONS = [
   { label: "發薪水", text: "支付臨時工兩天工資 3200 元", icon: "👷" },
 ];
 
-// ✅ 修正一：Tremor colors prop 只接受內建色彩名稱字串，不能用 HEX
-// BarChart categories 對應的顏色名稱必須是 Tremor 色系（emerald, rose, blue...）
-const BAR_CHART_COLORS = ["emerald", "rose"];   // 收入=emerald綠, 支出=rose紅
-const DONUT_COLORS = ["emerald", "amber", "rose", "blue", "violet"]; // 支出結構圓餅
+// 直接用 HEX，Recharts 完全支援，不依賴 Tremor/Tailwind JIT
+const COLOR_INCOME  = "#10b981";
+const COLOR_EXPENSE = "#f43f5e";
+const DONUT_COLORS  = ["#10b981", "#f59e0b", "#f43f5e", "#3b82f6", "#8b5cf6"];
 
-// ✅ 修正二：改用 gemini-2.0-flash（你的 API Key 確認可用，最穩定）
-// gemini-2.5-flash 高峰時段會回傳 503，gemini-2.0-flash 較穩定
 const GEMINI_MODEL = "gemini-2.0-flash";
 
 // 指數退避重試工具函式
@@ -430,24 +432,23 @@ export default function App() {
           </Card>
         </Grid>
 
-        {/* ✅ 修正一：BarChart/DonutChart colors 改用 Tremor 內建色彩名稱，不能用 HEX */}
+        {/* 圖表：改用 Recharts，HEX 顏色直接生效，不受 Tailwind JIT purge 影響 */}
         <Grid numItemsLg={2} className="gap-8">
           <Card className="bg-white shadow-lg">
             <Title className="text-slate-800 flex items-center gap-2">
               <TrendingUp className="text-emerald-600" /> 月度損益分佈
             </Title>
-            <BarChart
-              className="mt-6 h-72"
-              data={barChartData}
-              index="name"
-              categories={["收入", "支出"]}
-              colors={BAR_CHART_COLORS}
-              valueFormatter={(value) => `$${value.toLocaleString()}`}
-              yAxisWidth={80}
-              showLegend={true}
-              showGridLines={true}
-              showAnimation={true}
-            />
+            <ResponsiveContainer width="100%" height={288} className="mt-6">
+              <BarChart data={barChartData} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="name" tick={{ fontSize: 13, fill: "#64748b" }} />
+                <YAxis tickFormatter={v => `$${v.toLocaleString()}`} tick={{ fontSize: 12, fill: "#64748b" }} width={90} />
+                <Tooltip formatter={(value) => [`$${value.toLocaleString()}`, undefined]} />
+                <Legend />
+                <Bar dataKey="收入" fill={COLOR_INCOME} radius={[6, 6, 0, 0]} />
+                <Bar dataKey="支出" fill={COLOR_EXPENSE} radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
           </Card>
 
           <Card className="bg-white shadow-lg">
@@ -455,16 +456,27 @@ export default function App() {
               <Wallet className="text-amber-600" /> 支出結構明細
             </Title>
             {donutChartData.length > 0 ? (
-              <DonutChart
-                className="mt-6 h-64"
-                data={donutChartData}
-                category="value"
-                index="name"
-                colors={DONUT_COLORS}
-                valueFormatter={(value) => `$${value.toLocaleString()}`}
-                showAnimation={true}
-                showLabel={true}
-              />
+              <ResponsiveContainer width="100%" height={256} className="mt-6">
+                <PieChart>
+                  <Pie
+                    data={donutChartData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={100}
+                    paddingAngle={3}
+                    label={({ name, value }) => `${name} $${value.toLocaleString()}`}
+                    labelLine={true}
+                  >
+                    {donutChartData.map((_, index) => (
+                      <Cell key={`cell-${index}`} fill={DONUT_COLORS[index % DONUT_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value) => [`$${value.toLocaleString()}`, undefined]} />
+                </PieChart>
+              </ResponsiveContainer>
             ) : (
               <div className="mt-6 h-64 flex items-center justify-center text-slate-400 text-sm">
                 尚無支出紀錄
