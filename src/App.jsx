@@ -33,12 +33,14 @@ const QUICK_SUGGESTIONS = [
   { label: "發薪水", text: "支付臨時工兩天工資 3200 元", icon: "👷" },
 ];
 
-// ✅ 修正色碼：直接使用 HEX，避免 Tailwind JIT 清除動態色彩類別
-const CHART_COLORS = {
-  income: "#10b981",   // emerald-500
-  expense: "#f43f5e",  // rose-500
-  donut: ["#10b981", "#f59e0b", "#f43f5e", "#3b82f6", "#8b5cf6"],
-};
+// ✅ 修正一：Tremor colors prop 只接受內建色彩名稱字串，不能用 HEX
+// BarChart categories 對應的顏色名稱必須是 Tremor 色系（emerald, rose, blue...）
+const BAR_CHART_COLORS = ["emerald", "rose"];   // 收入=emerald綠, 支出=rose紅
+const DONUT_COLORS = ["emerald", "amber", "rose", "blue", "violet"]; // 支出結構圓餅
+
+// ✅ 修正二：改用 gemini-2.0-flash（你的 API Key 確認可用，最穩定）
+// gemini-2.5-flash 高峰時段會回傳 503，gemini-2.0-flash 較穩定
+const GEMINI_MODEL = "gemini-2.0-flash";
 
 // 指數退避重試工具函式
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -62,9 +64,6 @@ const generateWithRetry = async (model, prompt, maxRetries = 3) => {
     }
   }
 };
-
-// ✅ 修正：使用較穩定的模型名稱（gemini-1.5-flash 作為備援）
-const GEMINI_MODEL = "gemini-2.5-flash";
 
 export default function App() {
   const [records, setRecords] = useState([]);
@@ -117,8 +116,10 @@ export default function App() {
     } catch (e) {
       if (e?.message?.includes('429')) {
         alert("AI 請求已達上限，請稍候幾分鐘再試，或改用手動輸入。");
+      } else if (e?.message?.includes('503')) {
+        alert("AI 服務暫時繁忙（503），已自動重試 3 次仍失敗。請稍後再試或改用手動輸入。");
       } else {
-        alert("AI 解析失敗，請嘗試更清楚的描述，或使用手動輸入。");
+        alert("AI 解析失敗，請嘗試更清楚的描述，或使用手動輸入。\n錯誤：" + (e?.message || '未知'));
       }
     }
     setLoading(false);
@@ -138,6 +139,8 @@ export default function App() {
     } catch (e) {
       if (e?.message?.includes('429')) {
         setDiagnosis("⚠️ AI 請求次數已達上限（429 Too Many Requests）。\n請稍候 1～2 分鐘後再點擊生成報告，或改用付費 API Key 以提升配額。");
+      } else if (e?.message?.includes('503')) {
+        setDiagnosis("⚠️ AI 服務暫時繁忙（503 Service Unavailable）。\n已自動重試 3 次，請稍候幾分鐘後再點擊生成報告。");
       } else {
         setDiagnosis("診斷報告生成失敗，請檢查網路連線。\n錯誤訊息：" + (e?.message || '未知錯誤'));
       }
@@ -163,7 +166,7 @@ export default function App() {
     return { income, expense, balance: profit, ratio, profitChange };
   }, [records]);
 
-  // ✅ 修正：圖表資料 - categories 名稱須與資料 key 完全對應
+  // ✅ 圖表資料 - categories 名稱須與資料 key 完全對應
   const barChartData = useMemo(() => ([
     { name: '當前統計', '收入': stats.income, '支出': stats.expense }
   ]), [stats]);
@@ -427,7 +430,7 @@ export default function App() {
           </Card>
         </Grid>
 
-        {/* ✅ 修正：圖表改用 HEX 色碼，解決 Tailwind JIT purge 導致顏色變黑問題 */}
+        {/* ✅ 修正一：BarChart/DonutChart colors 改用 Tremor 內建色彩名稱，不能用 HEX */}
         <Grid numItemsLg={2} className="gap-8">
           <Card className="bg-white shadow-lg">
             <Title className="text-slate-800 flex items-center gap-2">
@@ -438,7 +441,7 @@ export default function App() {
               data={barChartData}
               index="name"
               categories={["收入", "支出"]}
-              colors={[CHART_COLORS.income, CHART_COLORS.expense]}
+              colors={BAR_CHART_COLORS}
               valueFormatter={(value) => `$${value.toLocaleString()}`}
               yAxisWidth={80}
               showLegend={true}
@@ -457,7 +460,7 @@ export default function App() {
                 data={donutChartData}
                 category="value"
                 index="name"
-                colors={CHART_COLORS.donut}
+                colors={DONUT_COLORS}
                 valueFormatter={(value) => `$${value.toLocaleString()}`}
                 showAnimation={true}
                 showLabel={true}
