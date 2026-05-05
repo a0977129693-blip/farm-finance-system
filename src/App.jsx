@@ -135,7 +135,7 @@ export default function App() {
     try {
       const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
       const history = records.slice(0, 15).map(r => `${r.type}:${r.amount}(${r.category})`).join(',');
-      const prompt = `你是農場經營顧問，分析這些帳目並提供經營策略建議(含支出異常預警，請用繁體中文回覆)：${history}`;
+      const prompt = `你是農場經營顧問，請用繁體中文，以3點以內條列式簡短分析以下帳目，每點不超過20字，並標出最需注意的異常：${history}`;
       const result = await generateWithRetry(model, prompt);
       setDiagnosis(result.response.text());
     } catch (e) {
@@ -149,7 +149,11 @@ export default function App() {
     }
     setDiagLoading(false);
   };
-
+  
+const model = genAI.getGenerativeModel({ 
+  model: GEMINI_MODEL,
+  generationConfig: { maxOutputTokens: 200 }
+});
   // 4. 數據運算
   const stats = useMemo(() => {
     const now = new Date();
