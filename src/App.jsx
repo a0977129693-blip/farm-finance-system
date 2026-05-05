@@ -42,7 +42,7 @@ const COLOR_INCOME  = "#10b981";
 const COLOR_EXPENSE = "#f43f5e";
 const DONUT_COLORS  = ["#10b981", "#f59e0b", "#f43f5e", "#3b82f6", "#8b5cf6"];
 
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 // 指數退避重試工具函式
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
