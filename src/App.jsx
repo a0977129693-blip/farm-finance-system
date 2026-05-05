@@ -24,7 +24,7 @@ try {
 
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
 
-// 語意記帳常用語句 (Semantic Text Examples)
+// 語意記帳常用語句
 const QUICK_SUGGESTIONS = [
   { label: "客房收入", text: "昨天三間雙人房住宿收入 6000 元", icon: "🏠" },
   { label: "賣農產", text: "賣出高麗菜 20 斤共 800 元", icon: "🥦" },
@@ -32,6 +32,29 @@ const QUICK_SUGGESTIONS = [
   { label: "繳電費", text: "繳交本月農場電費 3500 元", icon: "💡" },
   { label: "發薪水", text: "支付臨時工兩天工資 3200 元", icon: "👷" },
 ];
+
+// ✅ 修正2：指數退避重試工具函式
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const generateWithRetry = async (model, prompt, maxRetries = 3) => {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result;
+    } catch (err) {
+      const isRateLimit = err?.message?.includes('429') || err?.status === 429;
+      const isServerError = err?.message?.includes('503') || err?.status === 503;
+      
+      if ((isRateLimit || isServerError) && attempt < maxRetries - 1) {
+        const waitTime = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
+        console.log(`API 限流，等待 ${waitTime / 1000} 秒後重試 (第 ${attempt + 1} 次)...`);
+        await sleep(waitTime);
+        continue;
+      }
+      throw err;
+    }
+  }
+};
 
 export default function App() {
   const [records, setRecords] = useState([]);
@@ -72,7 +95,7 @@ export default function App() {
       語句：「${aiInput}」
       格式：{"type": "income"或"expense", "amount": 數字, "category": "上述類別", "description": "內容摘要"}`;
       
-      const result = await model.generateContent(prompt);
+      const result = await generateWithRetry(model, prompt);
       const text = result.response.text().replace(/```json|```/g, '').trim();
       const data = JSON.parse(text);
       
@@ -82,23 +105,32 @@ export default function App() {
       });
       setAiInput('');
     } catch (e) {
-      alert("AI 解析失敗，請嘗試更清楚的描述，或使用手動輸入。");
+      if (e?.message?.includes('429')) {
+        alert("AI 請求已達上限，請稍候幾分鐘再試，或改用手動輸入。");
+      } else {
+        alert("AI 解析失敗，請嘗試更清楚的描述，或使用手動輸入。");
+      }
     }
     setLoading(false);
   };
 
-  // 3. AI 經營診斷報告
+  // 3. AI 經營診斷報告 ✅ 修正：改用 gemini-2.5-flash + 重試機制
   const generateDiagnosis = async () => {
     if (records.length === 0) return alert("尚無數據可分析");
     setDiagLoading(true);
+    setDiagnosis('');
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
       const history = records.slice(0, 15).map(r => `${r.type}:${r.amount}(${r.category})`).join(',');
       const prompt = `你是農場經營顧問，分析這些帳目並提供經營策略建議(含支出異常預警，請用繁體中文回覆)：${history}`;
-      const result = await model.generateContent(prompt);
+      const result = await generateWithRetry(model, prompt);
       setDiagnosis(result.response.text());
     } catch (e) {
-      setDiagnosis("診斷報告生成失敗，請檢查網路連線。");
+      if (e?.message?.includes('429')) {
+        setDiagnosis("⚠️ AI 請求次數已達上限（429 Too Many Requests）。\n請稍候 1～2 分鐘後再點擊生成報告，或改用付費 API Key 以提升配額。");
+      } else {
+        setDiagnosis("診斷報告生成失敗，請檢查網路連線。\n錯誤訊息：" + (e?.message || '未知錯誤'));
+      }
     }
     setDiagLoading(false);
   };
@@ -119,6 +151,22 @@ export default function App() {
     const ratio = income > 0 ? (expense / income) * 100 : 0;
     
     return { income, expense, balance: profit, ratio, profitChange };
+  }, [records]);
+
+  // ✅ 修正1：圖表資料整理（加入 valueFormatter 與明確色碼）
+  const barChartData = useMemo(() => ([
+    { name: '當前統計', '收入': stats.income, '支出': stats.expense }
+  ]), [stats]);
+
+  const donutChartData = useMemo(() => {
+    return records
+      .filter(r => r.type === 'expense')
+      .reduce((acc, curr) => {
+        const ex = acc.find(i => i.name === curr.category);
+        if (ex) ex.value += curr.amount;
+        else acc.push({ name: curr.category, value: curr.amount });
+        return acc;
+      }, []);
   }, [records]);
 
   // 5. CRUD 基礎管理
@@ -369,7 +417,7 @@ export default function App() {
           </Card>
         </Grid>
 
-        {/* 圖表分析 */}
+        {/* ✅ 修正1：圖表分析 - 改用 customTooltipAttributes 與明確顏色 */}
         <Grid numItemsLg={2} className="gap-8">
           <Card className="bg-white shadow-lg">
             <Title className="text-slate-800 flex items-center gap-2">
@@ -377,11 +425,15 @@ export default function App() {
             </Title>
             <BarChart
               className="mt-6 h-72"
-              data={[{name: '當前統計', '收入': stats.income, '支出': stats.expense}]}
+              data={barChartData}
               index="name"
               categories={["收入", "支出"]}
               colors={["emerald", "rose"]}
-              yAxisWidth={60}
+              valueFormatter={(value) => `$${value.toLocaleString()}`}
+              yAxisWidth={80}
+              showLegend={true}
+              showGridLines={true}
+              showAnimation={true}
             />
           </Card>
 
@@ -389,18 +441,22 @@ export default function App() {
             <Title className="text-slate-800 flex items-center gap-2">
               <Wallet className="text-amber-600" /> 支出結構明細
             </Title>
-            <DonutChart
-              className="mt-6 h-64"
-              data={records.filter(r => r.type === 'expense').reduce((acc, curr) => {
-                const ex = acc.find(i => i.name === curr.category);
-                if (ex) ex.value += curr.amount; else acc.push({name: curr.category, value: curr.amount});
-                return acc;
-              }, [])}
-              category="value"
-              index="name"
-              colors={["emerald", "amber", "rose", "blue", "yellow"]}
-              variant="pie"
-            />
+            {donutChartData.length > 0 ? (
+              <DonutChart
+                className="mt-6 h-64"
+                data={donutChartData}
+                category="value"
+                index="name"
+                colors={["emerald", "amber", "rose", "blue", "violet"]}
+                valueFormatter={(value) => `$${value.toLocaleString()}`}
+                showAnimation={true}
+                showLabel={true}
+              />
+            ) : (
+              <div className="mt-6 h-64 flex items-center justify-center text-slate-400 text-sm">
+                尚無支出紀錄
+              </div>
+            )}
           </Card>
         </Grid>
 
@@ -413,9 +469,12 @@ export default function App() {
             <button
               onClick={generateDiagnosis}
               disabled={diagLoading}
-              className="py-2 px-5 text-sm font-bold rounded-lg border-2 border-emerald-600 bg-white text-emerald-700 hover:bg-emerald-100 transition-all flex items-center gap-2"
+              className="py-2 px-5 text-sm font-bold rounded-lg border-2 border-emerald-600 bg-white text-emerald-700 hover:bg-emerald-100 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {diagLoading ? <div className="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin"></div> : '生成 AI 報告'}
+              {diagLoading 
+                ? <><div className="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin"></div> 分析中（自動重試）</>
+                : '生成 AI 報告'
+              }
             </button>
           </Flex>
           {diagnosis ? (
